@@ -1,4 +1,6 @@
 import os
+
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,7 +11,12 @@ import argparse
 from model import FNAC
 from datasets import get_test_dataset, inverse_normalize, get_test_dataset_2
 import cv2
+from segment_anything import sam_model_registry, SamPredictor
 
+
+sam_checkpoint = "../SAM/checkpoints/sam_vit_h_4b8939.pth"
+model_type = "vit_h"
+device = "cuda"
 
 def get_arguments():
     parser = argparse.ArgumentParser()
@@ -40,6 +47,9 @@ def get_arguments():
     parser.add_argument('--port', type=int, default=12345)
     parser.add_argument('--dist_url', type=str, default='tcp://localhost:12345')
     parser.add_argument('--multiprocessing_distributed', default=False)
+
+    # SAM params
+    parser.add_argument('--num_points', type=int, default=5)
 
     return parser.parse_args()
 
@@ -99,10 +109,110 @@ def main(args):
     # print(f'cIoU (epoch ): {cIoU}')
     # print(f'AUC (epoch ): {auc}')
 
-    validate(testdataloader, audio_visual_model, object_saliency_model, viz_dir, args)
-    validate2(testdataloader, audio_visual_model, object_saliency_model, viz_dir, args)
+    sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+    sam.to(device=device)
+
+    sam_predictor = SamPredictor(sam)
+
+    sam_segment(testdataloader, audio_visual_model, sam_predictor, viz_dir, args)
+
+    # validate(testdataloader, audio_visual_model, object_saliency_model, viz_dir, args)
+    # validate2(testdataloader, audio_visual_model, object_saliency_model, viz_dir, args)
 
 
+
+def random_coordinates(tensor, num_points=5):
+    # 获取1区域的点坐标
+    ones_coords = np.column_stack(np.where(tensor == 1))
+    # 获取0区域的点坐标
+    zeros_coords = np.column_stack(np.where(tensor == 0))
+
+    # 从每个区域中随机选择指定数量的点
+    pos_coor = ones_coords[np.random.choice(len(ones_coords), size=num_points, replace=False)]
+    neg_coor = zeros_coords[np.random.choice(len(zeros_coords), size=num_points, replace=False)]
+
+    return pos_coor, neg_coor
+
+
+def show_mask(mask, ax, random_color=False):
+    if random_color:
+        color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
+    else:
+        color = np.array([30 / 255, 144 / 255, 255 / 255, 0.6])
+    h, w = mask.shape[-2:]
+    mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+    ax.imshow(mask_image)
+
+
+def show_points(coords, labels, ax, marker_size=375):
+    pos_points = coords[labels == 1]
+    neg_points = coords[labels == 0]
+    ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', marker='*', s=marker_size, edgecolor='white',
+               linewidth=1.25)
+    ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white',
+               linewidth=1.25)
+
+
+def show_box(box, ax):
+    x0, y0 = box[0], box[1]
+    w, h = box[2] - box[0], box[3] - box[1]
+    ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor='green', facecolor=(0, 0, 0, 0), lw=2))
+
+@torch.no_grad()
+def sam_segment(testdataloader, audio_visual_model, sam_predictor, viz_dir, args):
+    audio_visual_model.train(False)
+    for step, (raw_image, image, spec, bboxes, name) in enumerate(testdataloader):
+        if args.gpu is not None:
+            spec = spec.cuda(args.gpu, non_blocking=True)
+            image = image.cuda(args.gpu, non_blocking=True)
+
+        # print( image.get_device(), spec.get_device())
+        # Compute S_AVL
+        heatmap_av = audio_visual_model(image.float(), spec.float())[1].unsqueeze(1)
+        heatmap_av = F.interpolate(heatmap_av, size=(224, 224), mode='bilinear', align_corners=True)
+        heatmap_av = heatmap_av.data.cpu().numpy()
+
+        # TODO: Pluge SAM Here and perform on raw image with mask
+
+        # Compute eval metrics and save visualizations
+        for i in range(spec.shape[0]):
+            pred_av = utils.normalize_img(heatmap_av[i, 0])
+            # threshold setting
+            thr_av = np.sort(pred_av.flatten())[int(pred_av.shape[0] * pred_av.shape[1] * 0.5)]
+
+            infer_map = np.zeros((224, 224))
+            infer_map[pred_av >= thr_av] = 1
+
+            pos_coor, neg_coor = random_coordinates(infer_map, num_points=args.num_points)
+            input_point = np.row_stack((pos_coor, neg_coor))
+            input_label = np.array([1]*args.num_points + [0]*args.num_points)
+
+            sam_predictor.set_image(np.array(raw_image.squeeze(0)))
+            mask, _, _ = sam_predictor.predict(point_coords=input_point, point_labels=input_label, multimask_output=False)
+
+            r_mask = np.zeros((1, 256, 256))
+            r_mask[mask == 1] = 255
+            gb_mask = np.zeros((2, 256, 256))
+            rgb_mask = np.row_stack((gb_mask, r_mask)).transpose((1, 2, 0))
+            seg_image = cv2.addWeighted(np.array(raw_image.squeeze(0)), 0.6, np.uint8(rgb_mask), 0.4, 0)
+            contrast_img = np.column_stack((seg_image, np.array(raw_image.squeeze(0))))
+
+            cv2.imwrite(os.path.join(viz_dir, f'00_seg_image{name[i]}.jpg'), seg_image)
+            cv2.imwrite(os.path.join(viz_dir, f'00_cts_image{name[i]}.jpg'), contrast_img)
+
+
+
+
+            # seg_res = np.where(np.tile(mask, (3, 1, 1)).transpose((1,2,0)), [1, 0, 0], raw_image.squeeze(0))
+            # plt.imsave(os.path.join(viz_dir, f'aaa_{name[i]}_mask.png'), seg_res.astype(np.uint8))
+            # print(seg_res)
+            # plt.figure(figsize=(10, 10))
+            # plt.imshow(image)
+            # show_mask(mask, plt.gca())
+            # show_points(input_point, input_label, plt.gca())
+            # plt.axis('off')
+            # plt.show()
+        # plt.imsave(masks, os.path.join(viz_dir, f'aaa_{name[i]}_mask.jpg'))
 
 @torch.no_grad()
 def validate(testdataloader, audio_visual_model, object_saliency_model, viz_dir, args):
@@ -112,7 +222,7 @@ def validate(testdataloader, audio_visual_model, object_saliency_model, viz_dir,
     evaluator_av = utils.Evaluator()
     evaluator_obj = utils.Evaluator()
     evaluator_av_obj = utils.Evaluator()
-    for step, (image, spec, bboxes, name) in enumerate(testdataloader):
+    for step, (raw_image, image, spec, bboxes, name) in enumerate(testdataloader):
         if args.gpu is not None:
             spec = spec.cuda(args.gpu, non_blocking=True)
             image = image.cuda(args.gpu, non_blocking=True)
@@ -127,6 +237,8 @@ def validate(testdataloader, audio_visual_model, object_saliency_model, viz_dir,
         img_feat = object_saliency_model(image)
         heatmap_obj = F.interpolate(img_feat, size=(224, 224), mode='bilinear', align_corners=True)
         heatmap_obj = heatmap_obj.data.cpu().numpy()
+
+        #TODO: Pluge SAM Here and perform on raw image with mask
 
         # Compute eval metrics and save visualizations
         for i in range(spec.shape[0]):

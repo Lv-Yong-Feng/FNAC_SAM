@@ -1,8 +1,8 @@
 
 
 python test.py 
-    --test_data_path [test data path] \
-    --test_gt_path [test gt path] \
+    --test_data_path ../data/Flickr/Dataset/Data \
+    --test_gt_path ../data/Flickr/Dataset/Annotations \
     --model_dir checkpoints \
     --experiment_name vgg10k_001 \
     --testset 'flickr' \
@@ -10,7 +10,7 @@ python test.py
     --gpu 0 \
     --dropout_img 0.9 \
     --dropout_aud 0 \
-    # --save_visualizations \
+     --save_visualizations \
     # --multiprocessing_distributed True
 
 

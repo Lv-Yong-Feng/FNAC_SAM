@@ -268,6 +268,7 @@ def validate(test_loader, model, args):
         for i in range(spec.shape[0]):
             pred = utils.normalize_img(avl_map[i, 0])
             gt_map = bboxes['gt_map'].data.cpu().numpy()
+            # 阈值直接取中位数,大于阈值全取1,小于阈值保持不变
             thr = np.sort(pred.flatten())[int(pred.shape[0] * pred.shape[1] / 2)]
             evaluator.cal_CIOU(pred, gt_map, thr)
 

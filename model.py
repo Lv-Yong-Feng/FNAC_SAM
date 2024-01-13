@@ -67,6 +67,7 @@ class FNAC(nn.Module):
         frg_feature = frg_feature.flatten(-2, -1).mean(dim=-1) 
         frg_attn = (frg_feature@frg_feature.transpose(0,1)) / self.tau
 
+        # TODO： ？？
         logits = Slogits.flatten(-2, -1).max(dim=-1)[0]
         labels = torch.arange(B).long().to(img.device)
         

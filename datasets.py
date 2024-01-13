@@ -185,6 +185,7 @@ class AudioVisualDataset(Dataset):
 
         self.audio_files = audio_files
         self.image_files = image_files
+
         self.all_bboxes = all_bboxes
         self.bbox_format = bbox_format
 
@@ -197,6 +198,9 @@ class AudioVisualDataset(Dataset):
 
         # Image
         img_fn = os.path.join(self.image_path, self.image_files[idx])
+        # modification: adding raw image
+        raw_frame = np.array(load_image(img_fn))
+
         frame = self.image_transform(load_image(img_fn))
 
         # Audio
@@ -208,8 +212,8 @@ class AudioVisualDataset(Dataset):
         if self.all_bboxes is not None:
             bboxes['bboxes'] = self.all_bboxes[file_id]
             bboxes['gt_map'] = bbox2gtmap(self.all_bboxes[file_id], self.bbox_format)
-
-        return frame, spectrogram, bboxes, file_id
+        # modification: adding raw image
+        return raw_frame, frame, spectrogram, bboxes, file_id
 
     def __len__(self):
         return len(self.image_files)
@@ -273,8 +277,8 @@ class AudioVisualDataset2(Dataset):
             return self.getitem(random.sample(range(len(self)), 1)[0])
 
 def get_train_dataset(args):
-    audio_path = f"{args.train_data_path}/audio/"
-    image_path = f"{args.train_data_path}/frames/"
+    audio_path = f"{args.train_data_path}"
+    image_path = f"{args.train_data_path}"
 
     # audio_path = f"{args.train_data_path}/"
     # image_path = f"{args.train_data_path}/"
